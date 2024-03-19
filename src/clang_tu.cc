@@ -13,19 +13,31 @@
 #include <clang/Driver/Tool.h>
 #include <clang/Lex/Lexer.h>
 #include <clang/Lex/PreprocessorOptions.h>
+#if LLVM_VERSION_MAJOR >= 16 // llvmorg-16-init-15123-gf09cf34d0062
+#include <llvm/TargetParser/Host.h>
+#else
 #include <llvm/Support/Host.h>
+#endif
 #include <llvm/Support/Path.h>
 
 using namespace clang;
 
 namespace ccls {
+#if LLVM_VERSION_MAJOR < 19
 std::string pathFromFileEntry(const FileEntry &file) {
+#else
+std::string pathFromFileEntry(FileEntryRef file) {
+#endif
   std::string ret;
   if (file.getName().startswith("/../")) {
     // Resolve symlinks outside of working folders. This handles leading path
     // components, e.g. (/lib -> /usr/lib) in
     // /../lib/gcc/x86_64-linux-gnu/10/../../../../include/c++/10/utility
+#if LLVM_VERSION_MAJOR < 19
     ret = file.tryGetRealPathName();
+#else
+    ret = file.getFileEntry().tryGetRealPathName();
+#endif
   } else {
     // If getName() refers to a file within a workspace folder, we prefer it
     // (which may be a symlink).
@@ -121,6 +133,10 @@ buildCompilerInvocation(const std::string &main, std::vector<const char *> args,
   driver::Driver d(args[0], llvm::sys::getDefaultTargetTriple(), *diags, "ccls", vfs);
 #endif
   d.setCheckInputsExist(false);
+#if LLVM_VERSION_MAJOR >= 15
+  // For -include b.hh, don't probe b.hh.{gch,pch} and change to -include-pch.
+  d.setProbePrecompiled(false);
+#endif
   std::unique_ptr<driver::Compilation> comp(d.BuildCompilation(args));
   if (!comp)
     return nullptr;
@@ -159,10 +175,16 @@ buildCompilerInvocation(const std::string &main, std::vector<const char *> args,
   ci->getFrontendOpts().DisableFree = false;
   // Enable IndexFrontendAction::shouldSkipFunctionBody.
   ci->getFrontendOpts().SkipFunctionBodies = true;
+#if LLVM_VERSION_MAJOR >= 18
+  ci->getLangOpts().SpellChecking = false;
+  ci->getLangOpts().RecoveryAST = true;
+  ci->getLangOpts().RecoveryASTType = true;
+#else
   ci->getLangOpts()->SpellChecking = false;
 #if LLVM_VERSION_MAJOR >= 11
   ci->getLangOpts()->RecoveryAST = true;
   ci->getLangOpts()->RecoveryASTType = true;
+#endif
 #endif
   auto &isec = ci->getFrontendOpts().Inputs;
   if (isec.size())

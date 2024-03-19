@@ -194,7 +194,11 @@ public:
     const FileEntry *file = fileRef ? &fileRef->getFileEntry() : nullptr;
 #endif
     if (file && seen.insert(file).second)
+#if LLVM_VERSION_MAJOR < 19
       out.emplace_back(pathFromFileEntry(*file), file->getModificationTime());
+#else
+      out.emplace_back(pathFromFileEntry(*fileRef), file->getModificationTime());
+#endif
   }
 };
 
@@ -236,7 +240,11 @@ public:
     FileID fid = sm.getFileID(l);
     auto it = fID2concerned.try_emplace(fid.getHashValue());
     if (it.second) {
+#if LLVM_VERSION_MAJOR < 19
       const FileEntry *fe = sm.getFileEntryForID(fid);
+#else
+      OptionalFileEntryRef fe = sm.getFileEntryRefForID(fid);
+#endif
       it.first->second = fe && pathFromFileEntry(*fe) == path;
     }
     return it.first->second;
@@ -368,8 +376,12 @@ void buildPreamble(Session &session, CompilerInvocation &ci,
   std::unique_ptr<llvm::MemoryBuffer> buf =
       llvm::MemoryBuffer::getMemBuffer(content);
 #if LLVM_VERSION_MAJOR >= 12
+#if LLVM_VERSION_MAJOR >= 18
+  auto bounds = ComputePreambleBounds(ci.getLangOpts(), *buf, 0);
+#else
   // llvmorg-12-init-11522-g4c55c3b66de
   auto bounds = ComputePreambleBounds(*ci.getLangOpts(), *buf, 0);
+#endif
   // llvmorg-12-init-17739-gf4d02fbe418d
   if (!task.from_diag && oldP &&
       oldP->preamble.CanReuse(ci, *buf, bounds, *fs))
@@ -387,8 +399,13 @@ void buildPreamble(Session &session, CompilerInvocation &ci,
   ws.erase(std::remove(ws.begin(), ws.end(), "error"), ws.end());
   ci.getDiagnosticOpts().IgnoreWarnings = false;
   ci.getFrontendOpts().SkipFunctionBodies = true;
+#if LLVM_VERSION_MAJOR >= 18
+  ci.getLangOpts().CommentOpts.ParseAllComments = g_config->index.comments > 1;
+  ci.getLangOpts().RetainCommentsFromSystemHeaders = true;
+#else
   ci.getLangOpts()->CommentOpts.ParseAllComments = g_config->index.comments > 1;
   ci.getLangOpts()->RetainCommentsFromSystemHeaders = true;
+#endif
 
   StoreDiags dc(task.path);
   IntrusiveRefCntPtr<DiagnosticsEngine> de =
@@ -404,7 +421,11 @@ void buildPreamble(Session &session, CompilerInvocation &ci,
 
   CclsPreambleCallbacks pc;
   if (auto newPreamble = PrecompiledPreamble::Build(
-          ci, buf.get(), bounds, *de, fs, session.pch, true, pc)) {
+          ci, buf.get(), bounds, *de, fs, session.pch, true,
+#if LLVM_VERSION_MAJOR >= 17 // llvmorg-17-init-4072-gcc929590ad30
+          "",
+#endif
+          pc)) {
     assert(!ci.getPreprocessorOpts().RetainRemappedFileBuffers);
     if (oldP) {
       auto &old_includes = oldP->includes;
@@ -494,12 +515,19 @@ void *completionMain(void *manager_) {
     fOpts.CodeCompletionAt.FileName = task->path;
     fOpts.CodeCompletionAt.Line = task->position.line + 1;
     fOpts.CodeCompletionAt.Column = task->position.character + 1;
+#if LLVM_VERSION_MAJOR >= 18
+    ci->getLangOpts().CommentOpts.ParseAllComments = true;
+#else
     ci->getLangOpts()->CommentOpts.ParseAllComments = true;
+#endif
 
     DiagnosticConsumer dc;
     std::string content = manager->wfiles->getContent(task->path);
     auto buf = llvm::MemoryBuffer::getMemBuffer(content);
-#if LLVM_VERSION_MAJOR >= 12 // llvmorg-12-init-11522-g4c55c3b66de
+#if LLVM_VERSION_MAJOR >= 18
+    PreambleBounds bounds =
+        ComputePreambleBounds(ci->getLangOpts(), *buf, 0);
+#elif LLVM_VERSION_MAJOR >= 12 // llvmorg-12-init-11522-g4c55c3b66de
     PreambleBounds bounds =
         ComputePreambleBounds(*ci->getLangOpts(), *buf, 0);
 #else
@@ -597,7 +625,10 @@ void *diagnosticMain(void *manager_) {
       if (!rebuild) {
         std::string content = manager->wfiles->getContent(task.path);
         auto buf = llvm::MemoryBuffer::getMemBuffer(content);
-#if LLVM_VERSION_MAJOR >= 12 // llvmorg-12-init-11522-g4c55c3b66de
+#if LLVM_VERSION_MAJOR >= 18
+        PreambleBounds bounds =
+            ComputePreambleBounds(ci->getLangOpts(), *buf, 0);
+#elif LLVM_VERSION_MAJOR >= 12 // llvmorg-12-init-11522-g4c55c3b66de
         PreambleBounds bounds =
             ComputePreambleBounds(*ci->getLangOpts(), *buf, 0);
 #else
@@ -618,7 +649,11 @@ void *diagnosticMain(void *manager_) {
       ci->getDiagnosticOpts().Warnings.push_back("no-unused-function");
     ci->getDiagnosticOpts().IgnoreWarnings = false;
     ci->getFrontendOpts().SkipFunctionBodies = false;
+#if LLVM_VERSION_MAJOR >= 18
+    ci->getLangOpts().SpellChecking = g_config->diagnostics.spellChecking;
+#else
     ci->getLangOpts()->SpellChecking = g_config->diagnostics.spellChecking;
+#endif
     StoreDiags dc(task.path);
     std::string content = manager->wfiles->getContent(task.path);
     auto buf = llvm::MemoryBuffer::getMemBuffer(content);

@@ -28,6 +28,14 @@
 
 using namespace clang;
 
+#if LLVM_VERSION_MAJOR >= 18 // llvmorg-18-init-10631-gedd690b02e16
+#define TTK_Class TagTypeKind::Class
+#define TTK_Enum TagTypeKind::Enum
+#define TTK_Interface TagTypeKind::Interface
+#define TTK_Struct TagTypeKind::Struct
+#define TTK_Union TagTypeKind::Union
+#endif
+
 namespace ccls {
 namespace {
 
@@ -60,7 +68,11 @@ struct IndexParam {
     // generating an index for it):
     auto [it, inserted] = uid2file.try_emplace(fid);
     if (inserted) {
+#if LLVM_VERSION_MAJOR < 19
       const FileEntry *fe = ctx->getSourceManager().getFileEntryForID(fid);
+#else
+      OptionalFileEntryRef fe = ctx->getSourceManager().getFileEntryRefForID(fid);
+#endif
       if (!fe)
         return;
       std::string path = pathFromFileEntry(*fe);
@@ -86,9 +98,14 @@ struct IndexParam {
 
   bool useMultiVersion(FileID fid) {
     auto it = uid2multi.try_emplace(fid);
-    if (it.second)
+    if (it.second) {
+#if LLVM_VERSION_MAJOR < 19
       if (const FileEntry *fe = ctx->getSourceManager().getFileEntryForID(fid))
+#else
+      if (OptionalFileEntryRef fe = ctx->getSourceManager().getFileEntryRefForID(fid))
+#endif
         it.first->second = multiVersionMatcher->matches(pathFromFileEntry(*fe));
+    }
     return it.first->second;
   }
 };
@@ -628,7 +645,11 @@ public:
   static int getFileLID(IndexFile *db, SourceManager &sm, FileID fid) {
     auto [it, inserted] = db->uid2lid_and_path.try_emplace(fid);
     if (inserted) {
+#if LLVM_VERSION_MAJOR < 19
       const FileEntry *fe = sm.getFileEntryForID(fid);
+#else
+      OptionalFileEntryRef fe = sm.getFileEntryRefForID(fid);
+#endif
       if (!fe) {
         it->second.first = -1;
         return -1;
@@ -1116,7 +1137,11 @@ public:
                                      filenameRange, nullptr);
     FileID fid = sm.getFileID(filenameRange.getBegin());
     if (IndexFile *db = param.consumeFile(fid)) {
+#if LLVM_VERSION_MAJOR < 19
       std::string path = pathFromFileEntry(*file);
+#else
+      std::string path = pathFromFileEntry(*fileRef);
+#endif
       if (path.size())
         db->includes.push_back({spell.start.line, intern(path)});
     }
@@ -1294,9 +1319,15 @@ index(SemaManager *manager, WorkingFiles *wfiles, VFS *vfs,
   ok = false;
   // -fparse-all-comments enables documentation in the indexer and in
   // code completion.
+#if LLVM_VERSION_MAJOR >= 18
+  ci->getLangOpts().CommentOpts.ParseAllComments =
+      g_config->index.comments > 1;
+  ci->getLangOpts().RetainCommentsFromSystemHeaders = true;
+#else
   ci->getLangOpts()->CommentOpts.ParseAllComments =
       g_config->index.comments > 1;
   ci->getLangOpts()->RetainCommentsFromSystemHeaders = true;
+#endif
   std::string buf = wfiles->getContent(main);
   std::vector<std::unique_ptr<llvm::MemoryBuffer>> bufs;
   if (buf.size())
